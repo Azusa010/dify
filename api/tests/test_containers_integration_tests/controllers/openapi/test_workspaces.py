@@ -86,17 +86,16 @@ class TestWorkspaceDetail:
         assert someone_elses_ws is not None
 
         api = WorkspaceByIdApi()
-        with app.test_request_context(f"/openapi/v1/workspaces/{someone_elses_ws.id}"):
-            with pytest.raises(NotFound):
-                api.get.__handler__(
-                    api,
-                    context_for(
-                        outsider,
-                        session=db_session_with_containers,
-                        view_args={"workspace_id": someone_elses_ws.id},
-                    ),
-                    someone_elses_ws.id,
-                )
+        with app.test_request_context(f"/openapi/v1/workspaces/{someone_elses_ws.id}"), pytest.raises(NotFound):
+            api.get.__handler__(
+                api,
+                context_for(
+                    outsider,
+                    session=db_session_with_containers,
+                    view_args={"workspace_id": someone_elses_ws.id},
+                ),
+                someone_elses_ws.id,
+            )
 
 
 class TestWorkspaceSwitch:
@@ -141,12 +140,12 @@ class TestWorkspaceSwitch:
         assert outsider_ws is not None
 
         api = WorkspaceSwitchApi()
-        with app.test_request_context(f"/openapi/v1/workspaces/{outsider_ws.id}:switch", method="POST"):
-            with pytest.raises(NotFound):
-                api.post.__handler__(
-                    api,
-                    context_for(
-                        account, session=db_session_with_containers, view_args={"workspace_id": outsider_ws.id}
-                    ),
-                    outsider_ws.id,
-                )
+        with (
+            app.test_request_context(f"/openapi/v1/workspaces/{outsider_ws.id}:switch", method="POST"),
+            pytest.raises(NotFound),
+        ):
+            api.post.__handler__(
+                api,
+                context_for(account, session=db_session_with_containers, view_args={"workspace_id": outsider_ws.id}),
+                outsider_ws.id,
+            )
