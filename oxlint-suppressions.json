@@ -3808,9 +3808,6 @@
     },
     "jsx-a11y/no-static-element-interactions": {
       "count": 1
-    },
-    "typescript/no-explicit-any": {
-      "count": 3
     }
   },
   "web/app/components/workflow/run/loop-log/index.tsx": {
