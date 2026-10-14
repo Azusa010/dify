@@ -626,8 +626,11 @@ describe('SkillDetailPage builder', () => {
     )
 
     renderSkillDetailPage()
+    const builder = await screen.findByRole('region', {
+      name: 'skill.skillManagement.detail.builder.title',
+    })
     await user.click(
-      await screen.findByRole('button', {
+      await within(builder).findByRole('button', {
         name: 'modelProvider.modelProvider.modelSettings',
       }),
     )
