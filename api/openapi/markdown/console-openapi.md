@@ -14280,7 +14280,6 @@ Import a Skill zip package from multipart form field `file`.
 | Code | Description | Schema |
 | ---- | ----------- | ------ |
 | 200 | Workflow tool created successfully | **application/json**: [SimpleResultResponse](#simpleresultresponse)<br> |
-| 400 | Bad Request | **application/json**: [WorkflowToolHumanInputNotSupportedError](#workflowtoolhumaninputnotsupportederror)<br>[ErrorResponse](#errorresponse)<br> |
 | default | Error | **application/json**: [ErrorResponse](#errorresponse)<br> |
 
 ### [POST] /workspaces/current/tool-provider/workflow/delete
@@ -14338,7 +14337,6 @@ Import a Skill zip package from multipart form field `file`.
 | Code | Description | Schema |
 | ---- | ----------- | ------ |
 | 200 | Workflow tool updated successfully | **application/json**: [SimpleResultResponse](#simpleresultresponse)<br> |
-| 400 | Bad Request | **application/json**: [WorkflowToolHumanInputNotSupportedError](#workflowtoolhumaninputnotsupportederror)<br>[ErrorResponse](#errorresponse)<br> |
 | default | Error | **application/json**: [ErrorResponse](#errorresponse)<br> |
 
 ### [GET] /workspaces/current/tool-providers
@@ -28964,14 +28962,6 @@ Query parameters for workflow runs.
 | ---- | ---- | ----------- | -------- |
 | workflow_app_id | string |  | No |
 | workflow_tool_id | string |  | No |
-
-#### WorkflowToolHumanInputNotSupportedError
-
-Workflow with Human Input nodes cannot be published as a workflow tool.
-
-| Name | Type | Description | Required |
-| ---- | ---- | ----------- | -------- |
-| WorkflowToolHumanInputNotSupportedError |  | Workflow with Human Input nodes cannot be published as a workflow tool. |  |
 
 #### WorkflowToolListQuery
 
