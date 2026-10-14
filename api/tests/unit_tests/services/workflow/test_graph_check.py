@@ -1,7 +1,13 @@
 from collections.abc import Mapping
+from typing import cast
+from unittest.mock import Mock, patch
+
+import pytest
+from sqlalchemy.orm import Session
 
 from models import AppMode
-from services.workflow.graph_check import IssueCode, IssueSeverity, check_graph
+from services.workflow.graph_check import IssueCode, IssueSeverity, check_graph, credential_check
+from services.workflow_service import WorkflowService
 
 
 def _node(node_id: str, data: dict[str, object]) -> dict[str, object]:
@@ -39,6 +45,42 @@ def test_clean_graph_has_no_issues() -> None:
 def test_graph_without_nodes() -> None:
     assert _codes({"edges": []}) == [IssueCode.GRAPH_INVALID]
     assert _codes({"nodes": "x"}) == [IssueCode.GRAPH_INVALID]
+
+
+@pytest.mark.parametrize(
+    ("graph", "loc"),
+    [
+        ({"nodes": [{"id": "a", "data": None}], "edges": []}, ("nodes", "a", "data")),
+        ({"nodes": [{"id": "a", "data": [1]}], "edges": []}, ("nodes", "a", "data")),
+        ({"nodes": [{"id": "a"}], "edges": []}, ("nodes", "a", "data")),
+        ({"nodes": [5], "edges": []}, ("nodes", 0)),
+        ({"nodes": [START, None], "edges": []}, ("nodes", 1)),
+        ({"nodes": [{"data": {"type": "start"}}], "edges": []}, ("nodes", 0, "id")),
+        ({"nodes": [{"id": {"x": 1}, "data": {"type": "start"}}], "edges": []}, ("nodes", 0, "id")),
+        ({"nodes": [{"id": "", "data": {"type": "start"}}], "edges": []}, ("nodes", 0, "id")),
+        ({"nodes": [START, START], "edges": []}, ("nodes", 1, "id")),
+        ({"nodes": [START, {"id": "start", "data": None}], "edges": []}, ("nodes", 1, "id")),
+        ({"nodes": [START, {"id": "start", "type": "custom-note", "data": {}}], "edges": []}, ("nodes", 1, "id")),
+        ({"nodes": [START], "edges": 5}, ("edges",)),
+        ({"nodes": [START], "edges": "start->end"}, ("edges",)),
+        ({"nodes": [START], "edges": [{"source": "start", "target": "end"}, 7]}, ("edges", 1)),
+    ],
+)
+def test_malformed_shapes_are_graph_issues_not_errors(graph: Mapping[str, object], loc: tuple[object, ...]) -> None:
+    issues = check_graph(graph, mode=AppMode.WORKFLOW, resources=credential_check("ws-1", {}, cast(Session, Mock())))
+    assert [(i.code, i.loc) for i in issues] == [(IssueCode.GRAPH_INVALID, loc)]
+
+
+def test_every_repeat_of_a_node_id_is_reported() -> None:
+    issues = check_graph({"nodes": [START, END, START, START], "edges": []}, mode=AppMode.WORKFLOW)
+    assert [(i.code, i.node_id, i.loc) for i in issues] == [
+        (IssueCode.GRAPH_INVALID, "start", ("nodes", 2, "id")),
+        (IssueCode.GRAPH_INVALID, "start", ("nodes", 3, "id")),
+    ]
+
+
+def test_missing_edges_are_no_edges() -> None:
+    assert _codes({"nodes": [START]}) == []
 
 
 def test_mode_incompatible_nodes() -> None:
@@ -103,6 +145,39 @@ def test_legacy_if_else_branches_on_true() -> None:
     assert _codes({"nodes": [START, branch, END], "edges": edges}) == []
 
 
+def _unconnected(graph: Mapping[str, object]) -> list[str]:
+    issues = check_graph(graph, mode=AppMode.WORKFLOW)
+    return [i.message for i in issues if i.code is IssueCode.BRANCH_UNCONNECTED]
+
+
+def test_fail_branch_classifier_is_not_asked_for_a_source_edge() -> None:
+    classifier = _node(
+        "qc",
+        {
+            "type": "question-classifier",
+            "title": "Q",
+            "classes": [{"id": "c1", "name": "a"}],
+            "error_strategy": "fail-branch",
+        },
+    )
+    edges = [
+        {"id": "e0", "source": "start", "target": "qc", "sourceHandle": "source"},
+        {"id": "e1", "source": "qc", "target": "end", "sourceHandle": "c1"},
+        {"id": "e2", "source": "qc", "target": "end", "sourceHandle": "fail-branch"},
+    ]
+    assert _unconnected({"nodes": [START, classifier, END], "edges": edges}) == []
+
+
+def test_fail_branch_ordinary_node_still_needs_its_source_edge() -> None:
+    code = _node("c", {"type": "code", "title": "C", "error_strategy": "fail-branch"})
+    edges = [
+        {"id": "e0", "source": "start", "target": "c", "sourceHandle": "source"},
+        {"id": "e1", "source": "c", "target": "end", "sourceHandle": "fail-branch"},
+    ]
+    [message] = _unconnected({"nodes": [START, code, END], "edges": edges})
+    assert "'source'" in message
+
+
 def test_scalar_branch_lists_are_reported_not_raised() -> None:
     if_else = _node("if", {"type": "if-else", "title": "If", "cases": 5})
     classifier = _node("qc", {"type": "question-classifier", "title": "Q", "classes": 7})
@@ -131,3 +206,56 @@ def test_unexpected_node_validation_error_is_located_and_later_nodes_are_checked
     by_node = {i.node_id: i for i in issues}
     assert (by_node["h"].code, by_node["h"].loc) == (IssueCode.NODE_DATA_INVALID, ("nodes", "h", "data"))
     assert by_node["l"].code is IssueCode.NODE_DATA_INVALID
+
+
+@pytest.fixture(autouse=True)
+def service_without_storage():
+    with (
+        patch.object(WorkflowService, "__init__", return_value=None),
+        patch.object(WorkflowService, "_is_load_balancing_enabled", return_value=False),
+    ):
+        yield
+
+
+def test_credential_check_reports_what_publish_refuses_for_a_node() -> None:
+    llm = _node("l", {"type": "llm", "model": {"provider": "openai", "name": "gpt-4o"}})
+    check = credential_check("ws-1", {}, cast(Session, Mock()))
+
+    with patch.object(WorkflowService, "_validate_llm_model_config", side_effect=ValueError("no credential")) as v:
+        assert check(llm) == "no credential"
+
+    v.assert_called_once_with("ws-1", "openai", "gpt-4o")
+
+
+def test_credential_check_wraps_unexpected_errors_with_the_node() -> None:
+    llm = _node("l", {"type": "llm", "model": {"provider": "openai", "name": "gpt-4o"}})
+    check = credential_check("ws-1", {}, cast(Session, Mock()))
+
+    with patch.object(WorkflowService, "_validate_llm_model_config", side_effect=RuntimeError("boom")):
+        assert check(llm) == "Node l (llm): boom"
+
+
+@pytest.mark.parametrize("node_type", ["knowledge-retrieval", "parameter-extractor", "question-classifier"])
+def test_credential_check_matches_publish_for_model_nodes_publish_skips(node_type: str) -> None:
+    """Publish lists these types with underscores, so it never checks them; the release check must agree."""
+    node = _node("n", {"type": node_type, "model": {"provider": "openai", "name": "gpt-4o"}})
+    check = credential_check("ws-1", {}, cast(Session, Mock()))
+
+    with patch.object(WorkflowService, "_validate_llm_model_config", side_effect=ValueError("no credential")) as v:
+        assert check(node) is None
+
+    v.assert_not_called()
+
+
+def test_chatflow_starter_draft_only_lacks_a_model() -> None:
+    from services.app.console_gateway import _STARTER_DRAFT_GRAPHS
+
+    issues = check_graph(
+        _STARTER_DRAFT_GRAPHS[AppMode.ADVANCED_CHAT],
+        mode=AppMode.ADVANCED_CHAT,
+        resources=credential_check("ws-1", {}, cast(Session, Mock())),
+    )
+
+    assert [(i.code, i.node_id, i.message) for i in issues] == [
+        (IssueCode.RESOURCE_UNAVAILABLE, "llm", "Node llm (llm): Missing provider or model configuration")
+    ]

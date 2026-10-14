@@ -1170,6 +1170,7 @@ export const zOpenApiErrorCode = z.enum([
   'run_not_found',
   'secret_mask_not_secret',
   'secret_mask_unknown_id',
+  'service_api_disabled',
   'too_many_files',
   'too_many_requests',
   'trigger_workflow_service_mode_unavailable',
@@ -1182,6 +1183,7 @@ export const zOpenApiErrorCode = z.enum([
   'webapp_access_mode_console_only',
   'webapp_access_requires_ee',
   'webapp_access_unavailable',
+  'webapp_public_access_disabled',
 ])
 
 /**
@@ -1534,7 +1536,7 @@ export const zSubjectType = z.enum(['account', 'external_sso', 'resource_access'
 /**
  * SupportedAppType
  *
- * App types the app list ops list and filter by.
+ * App types the ``app`` usage face (``get app``) lists and filters.
  *
  * A curated subset of :class:`AppMode`: the real, user-facing app categories.
  * Excludes runtime-only mode tags that are not standalone apps
@@ -1543,7 +1545,8 @@ export const zSubjectType = z.enum(['account', 'external_sso', 'resource_access'
  *
  * Members reference ``AppMode.*.value`` so the subset relationship is
  * type-checked: dropping a member from ``AppMode`` breaks this at import.
- * This is the single source for the listable set — params and filters derive from it.
+ * This is the single source for the listable set — params, filters, and the
+ * generated CLI whitelist all derive from it.
  */
 export const zSupportedAppType = z.enum([
   'advanced-chat',

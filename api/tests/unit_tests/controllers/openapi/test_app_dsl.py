@@ -7,11 +7,12 @@ from unittest.mock import Mock
 import pytest
 import yaml
 from flask import Flask
-from werkzeug.exceptions import BadRequest, Forbidden, NotFound
+from werkzeug.exceptions import BadRequest, NotFound
 
+from controllers.common.errors import ForbiddenError
 from controllers.openapi import app_dsl
 from controllers.openapi._contract import op_of
-from controllers.openapi._errors import DraftNotFound, DslInvalid, OpenApiError, VersionNotFound
+from controllers.openapi._errors import DraftChanged, DraftNotFound, DslInvalid, OpenApiError, VersionNotFound
 from controllers.openapi._models import (
     AppDslExportQuery,
     AppDslExportResponse,
@@ -29,8 +30,8 @@ from machinery.context import RequestContext
 from models.model import App, AppMode
 from services.app.console_service import ConsoleAppNotFoundError
 from services.app_dsl_service import AppDslService
-from services.entities.dsl_entities import Import, ImportStatus
-from services.errors.app import IsDraftWorkflowError, WorkflowNotFoundError
+from services.entities.dsl_entities import DraftGuardedImportParams, Import, ImportStatus
+from services.errors.app import DraftChangedError, IsDraftWorkflowError, WorkflowNotFoundError
 from services.errors.base import NoPermissionError
 from services.workflow import dsl_import, graph_check
 from services.workflow.graph_check import IssueCode, IssueSeverity
@@ -81,10 +82,12 @@ def test_permission_denial_maps_to_forbidden(
     context = RequestContext("request-1", None, "account-1", "workspace-1")
 
     with app.test_request_context("/openapi/v1/workspaces/workspace-1/apps/imports", method="POST"):
-        with pytest.raises(Forbidden, match="denied") as exc_info:
+        with pytest.raises(ForbiddenError, match="denied") as exc_info:
             cast(_EndpointView, api.post).__handler__(api, context, **kwargs)
 
     assert isinstance(exc_info.value.__cause__, NoPermissionError)
+    assert exc_info.value.code == 403
+    assert exc_info.value.data == {"code": "forbidden", "message": "denied", "status": 403}
 
 
 @pytest.mark.parametrize(
@@ -180,11 +183,12 @@ def credentials(monkeypatch: pytest.MonkeyPatch) -> Callable[[str | None], None]
     monkeypatch.setattr(dsl_import, "session_factory", SimpleNamespace(create_session=nullcontext))
 
     def set_problem(problem: str | None) -> None:
-        def check_node_credentials(*_args: object, **_kwargs: object) -> None:
+        def validate_node_credentials(*_args: object, **_kwargs: object) -> None:
             if problem:
                 raise ValueError(problem)
 
-        monkeypatch.setattr(graph_check, "check_node_credentials", check_node_credentials)
+        service = SimpleNamespace(validate_node_credentials=validate_node_credentials)
+        monkeypatch.setattr(graph_check, "WorkflowService", lambda: service)
 
     set_problem(None)
     return set_problem
@@ -314,3 +318,119 @@ def test_export_answers_a_missing_workflow_with_the_openapi_error(
     api = AppDslExportApi()
     with app.test_request_context("/openapi/v1/apps/app-1/dsl"), pytest.raises(expected):
         cast(_ExportView, api.get).__handler__(api, ctx, "app-1", query=AppDslExportQuery(workflow_id=workflow_id))
+
+
+def test_import_hands_the_draft_hash_to_the_save(
+    app_query_services: ControllerTestServices, app: Flask, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_dsl, "prepare_import", lambda *_args, **_kwargs: "prepared yaml")
+    import_app = Mock(return_value=Import(id="import-1", status=ImportStatus.COMPLETED, app_id="app-1"))
+    monkeypatch.setattr(app_query_services.apps.imports, "import_app", import_app)
+
+    api = AppDslImportApi()
+    with app.test_request_context("/openapi/v1/workspaces/workspace-1/apps/imports", method="POST"):
+        cast(_EndpointView, api.post).__handler__(
+            api,
+            _CONTEXT,
+            workspace_id="workspace-1",
+            body=AppDslImportPayload(mode="yaml-content", yaml_content="x", app_id="app-1", draft_hash="exported"),
+        )
+
+    params = import_app.call_args.args[1]
+    assert isinstance(params, DraftGuardedImportParams)
+    assert (params.draft_hash, params.yaml_content, params.app_id) == ("exported", "prepared yaml", "app-1")
+
+
+@pytest.mark.parametrize(
+    ("api", "kwargs"),
+    [
+        (
+            AppDslImportApi(),
+            {
+                "workspace_id": "workspace-1",
+                "body": AppDslImportPayload(
+                    mode="yaml-content", yaml_content="x", app_id="app-1", draft_hash="exported"
+                ),
+            },
+        ),
+        (AppDslImportConfirmApi(), {"workspace_id": "workspace-1", "import_id": "import-1"}),
+    ],
+    ids=["import", "confirm"],
+)
+def test_a_draft_changed_during_the_save_answers_draft_changed(
+    app_query_services: ControllerTestServices,
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+    api: AppDslImportApi | AppDslImportConfirmApi,
+    kwargs: dict[str, object],
+) -> None:
+    def changed(*_args: object, **_kwargs: object) -> None:
+        raise DraftChangedError()
+
+    monkeypatch.setattr(app_dsl, "prepare_import", lambda *_args, **_kwargs: "prepared yaml")
+    monkeypatch.setattr(app_query_services.apps.imports, "import_app", changed)
+    monkeypatch.setattr(app_query_services.apps.imports, "confirm_import", changed)
+
+    with app.test_request_context("/openapi/v1/workspaces/workspace-1/apps/imports", method="POST"):
+        with pytest.raises(DraftChanged) as exc_info:
+            cast(_EndpointView, api.post).__handler__(api, _CONTEXT, **kwargs)
+
+    assert exc_info.value.code == 409
+
+
+def _raw_dsl(graph: object) -> str:
+    return yaml.safe_dump({"app": {"mode": "workflow", "name": "x"}, "workflow": {"graph": graph}})
+
+
+_MALFORMED_GRAPHS = [
+    pytest.param({"nodes": [{"id": "a", "data": None}], "edges": []}, id="null-data"),
+    pytest.param({"nodes": [{"id": "a", "data": {"type": "start"}}], "edges": 5}, id="scalar-edges"),
+    pytest.param({"nodes": [5, "x"], "edges": []}, id="scalar-nodes"),
+    pytest.param({"nodes": [{"data": {"type": "start"}}], "edges": []}, id="no-id"),
+    pytest.param({"nodes": "start", "edges": []}, id="scalar-node-list"),
+]
+
+
+@pytest.mark.parametrize("graph", _MALFORMED_GRAPHS)
+@pytest.mark.usefixtures("app_query_services", "credentials")
+def test_check_reports_malformed_graphs_as_issues(app: Flask, graph: object) -> None:
+    response = _check(app, DslCheckPayload(yaml_content=_raw_dsl(graph)))
+
+    assert response.valid is False
+    assert {row.code for row in response.issues} == {IssueCode.GRAPH_INVALID}
+
+
+@pytest.mark.parametrize("graph", _MALFORMED_GRAPHS)
+@pytest.mark.usefixtures("credentials")
+def test_import_refuses_malformed_graphs(
+    app_query_services: ControllerTestServices, app: Flask, monkeypatch: pytest.MonkeyPatch, graph: object
+) -> None:
+    import_app = Mock()
+    monkeypatch.setattr(app_query_services.apps.imports, "import_app", import_app)
+
+    api = AppDslImportApi()
+    with app.test_request_context("/openapi/v1/workspaces/workspace-1/apps/imports", method="POST"):
+        with pytest.raises(DslInvalid) as exc_info:
+            cast(_EndpointView, api.post).__handler__(
+                api,
+                _CONTEXT,
+                workspace_id="workspace-1",
+                body=AppDslImportPayload(mode="yaml-content", yaml_content=_raw_dsl(graph)),
+            )
+
+    import_app.assert_not_called()
+    assert {d.type for d in exc_info.value.details or []} == {IssueCode.GRAPH_INVALID}
+
+
+@pytest.mark.parametrize("environment_variables", [5, "KEY", [5], [None]])
+@pytest.mark.usefixtures("app_query_services", "credentials")
+def test_check_refuses_malformed_environment_variables(app: Flask, environment_variables: object) -> None:
+    yaml_content = yaml.safe_dump(
+        {
+            "app": {"mode": "workflow", "name": "x"},
+            "workflow": {"graph": {"nodes": [], "edges": []}, "environment_variables": environment_variables},
+        }
+    )
+
+    with pytest.raises(BadRequest, match="environment_variables"):
+        _check(app, DslCheckPayload(yaml_content=yaml_content))

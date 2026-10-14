@@ -5,9 +5,10 @@ from typing import Final
 from uuid import UUID, uuid4
 
 from flask_restx import Resource
-from werkzeug.exceptions import BadRequest, Forbidden, NotFound
+from werkzeug.exceptions import BadRequest, NotFound
 
 from constants.oauth_bearer import Scope
+from controllers.common.errors import ForbiddenError
 from controllers.common.rbac import RBACPermission
 from controllers.openapi import openapi_ns
 from controllers.openapi._contract import Example, Kind, endpoint, op_of
@@ -31,11 +32,10 @@ from extensions.ext_application_services import application_services
 from machinery.context import RequestContext
 from services.app.console_service import ConsoleAppNotFoundError
 from services.app_dsl_service import AppDslService
-from services.entities.dsl_entities import AppImportParams, Import, ImportMode, ImportStatus
-from services.errors.app import IsDraftWorkflowError, WorkflowNotFoundError
+from services.entities.dsl_entities import DraftGuardedImportParams, Import, ImportMode, ImportStatus
+from services.errors.app import DraftChangedError, IsDraftWorkflowError, WorkflowNotFoundError
 from services.errors.base import NoPermissionError
 from services.workflow.dsl_import import (
-    DraftChangedError,
     DslNotCheckableError,
     DslRefusedError,
     YamlUrlFetchError,
@@ -110,7 +110,7 @@ class AppDslImportApi(Resource):
     """
 
     @endpoint(
-        account_context=True,
+        context="workspace",
         op="import.console_app.dsl",
         kind=Kind.OBJECT,
         summary="Import an app from DSL text or URL",
@@ -142,14 +142,15 @@ class AppDslImportApi(Resource):
         except YamlUrlFetchError as error:
             failed = Import(id=str(uuid4()), status=ImportStatus.FAILED, error=str(error))
             return _import_response(failed, workspace_id=workspace_id), HTTPStatus.BAD_REQUEST
-        params = AppImportParams.model_validate(
-            body.model_dump(exclude={"draft_hash"})
-            | {"mode": ImportMode.YAML_CONTENT, "yaml_content": yaml_content, "yaml_url": None}
+        params = DraftGuardedImportParams.model_validate(
+            body.model_dump() | {"mode": ImportMode.YAML_CONTENT, "yaml_content": yaml_content, "yaml_url": None}
         )
         try:
             result = application_services().apps.imports.import_app(ctx, params)
         except NoPermissionError as exc:
-            raise Forbidden(str(exc)) from exc
+            raise ForbiddenError(str(exc)) from exc
+        except DraftChangedError as exc:
+            raise DraftChanged() from exc
 
         response = _import_response(result, workspace_id=workspace_id)
         match result.status:
@@ -170,7 +171,7 @@ class AppDslCheckApi(Resource):
     """
 
     @endpoint(
-        account_context=True,
+        context="workspace",
         op="check.console_app.dsl",
         kind=Kind.OBJECT,
         summary="Check a DSL without importing it: every problem with its node and field",
@@ -202,11 +203,12 @@ class AppDslImportConfirmApi(Resource):
     stored in Redis for 10 minutes; this call retrieves it and completes the
     import under the given workspace.
 
-    Returns 400 when the pending data has expired or the import fails.
+    Returns 400 when the pending data has expired or the import fails, and 409 ``draft_changed``
+    when the import carried a ``draft_hash`` the draft no longer matches.
     """
 
     @endpoint(
-        account_context=True,
+        context="workspace",
         op="confirm.console_app.dsl_import",
         kind=Kind.OBJECT,
         summary="Confirm a pending DSL import",
@@ -218,7 +220,9 @@ class AppDslImportConfirmApi(Resource):
         try:
             result = application_services().apps.imports.confirm_import(ctx, import_id)
         except NoPermissionError as exc:
-            raise Forbidden(str(exc)) from exc
+            raise ForbiddenError(str(exc)) from exc
+        except DraftChangedError as exc:
+            raise DraftChanged() from exc
 
         if result.status == ImportStatus.FAILED:
             return result, HTTPStatus.BAD_REQUEST
@@ -280,7 +284,7 @@ class AppDslCheckDependenciesApi(Resource):
     """
 
     @endpoint(
-        account_context=True,
+        context="workspace",
         op="check.console_app.dependency",
         kind=Kind.OBJECT,
         summary="Check plugin dependencies of an app",

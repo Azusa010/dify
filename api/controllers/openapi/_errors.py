@@ -83,6 +83,7 @@ class OpenApiErrorCode(StrEnum):
     NODE_TYPE_NOT_FOUND = "node_type_not_found"
     NODE_NOT_FOUND = "node_not_found"
     WEBAPP_ACCESS_MODE_CONSOLE_ONLY = "webapp_access_mode_console_only"
+    WEBAPP_PUBLIC_ACCESS_DISABLED = "webapp_public_access_disabled"
     SECRET_MASK_NOT_SECRET = "secret_mask_not_secret"
     MARKETPLACE_DISABLED = "marketplace_disabled"
     MARKETPLACE_UNAVAILABLE = "marketplace_unavailable"
@@ -96,6 +97,7 @@ class OpenApiErrorCode(StrEnum):
     DSL_INVALID = "dsl_invalid"
     DRAFT_CHANGED = "draft_changed"
     APP_MODE_MISMATCH = "app_mode_mismatch"
+    SERVICE_API_DISABLED = "service_api_disabled"
 
 
 class ErrorDetail(BaseModel):
@@ -351,6 +353,13 @@ class WebAppAccessModeConsoleOnly(OpenApiError):  # noqa: N818
     hint = "Use public, private_all or sso_verified here."
 
 
+class WebAppPublicAccessDisabled(OpenApiError):  # noqa: N818
+    code = 403
+    error_code = OpenApiErrorCode.WEBAPP_PUBLIC_ACCESS_DISABLED
+    description = "This server does not allow web apps with access_mode public."
+    hint = "Use private_all or sso_verified."
+
+
 class VersionNotRestorable(OpenApiError):  # noqa: N818
     code = 400
     error_code = OpenApiErrorCode.VERSION_NOT_RESTORABLE
@@ -457,3 +466,10 @@ class AppModeMismatch(OpenApiError):  # noqa: N818
     error_code = OpenApiErrorCode.APP_MODE_MISMATCH
     description = "This op does not serve apps of this mode."
     hint = "describe.console_app shows the app's mode."
+
+
+class ServiceApiDisabled(OpenApiError):  # noqa: N818
+    code = 403
+    error_code = OpenApiErrorCode.SERVICE_API_DISABLED
+    description = "This app's Service API is turned off."
+    hint = "A workspace admin can turn it on; hints holds the op."

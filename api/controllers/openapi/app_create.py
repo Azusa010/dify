@@ -1,4 +1,7 @@
-"""Create blank workflow and advanced-chat apps with an empty draft; export then gives the starting DSL."""
+"""Create workflow and advanced-chat apps with the editor's starter draft; export then gives the starting DSL.
+
+A workflow starts empty; an advanced-chat app starts with Start -> LLM -> Answer, the LLM without a model.
+"""
 
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ def _create(
 @openapi_ns.route("/workspaces/<string:workspace_id>/apps/workflow")
 class WorkflowAppCreateApi(Resource):
     @endpoint(
-        account_context=True,
+        context="workspace",
         op="create.console_app.workflow",
         kind=Kind.OBJECT,
         summary="Create a blank workflow app; export its DSL to start building",
@@ -49,10 +52,10 @@ class WorkflowAppCreateApi(Resource):
 @openapi_ns.route("/workspaces/<string:workspace_id>/apps/advanced-chat")
 class AdvancedChatAppCreateApi(Resource):
     @endpoint(
-        account_context=True,
+        context="workspace",
         op="create.console_app.advanced_chat",
         kind=Kind.OBJECT,
-        summary="Create a blank advanced-chat app; export its DSL to start building",
+        summary="Create an advanced-chat app with a Start, LLM and Answer draft; export its DSL to start building",
         examples=(Example(title="Create an advanced-chat app", input={"name": "Support bot"}),),
         requirements=_CREATE_GUARDS,
         body=CreateAppPayload,
