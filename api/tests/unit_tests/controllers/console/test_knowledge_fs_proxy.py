@@ -190,7 +190,10 @@ def test_proxy_options_hides_unregistered_operations(
 def test_proxy_is_hidden_when_knowledge_fs_is_disabled(app: Flask, config_overrides: Callable[..., None]) -> None:
     config_overrides(KNOWLEDGE_FS_ENABLED=False)
 
-    with app.test_request_context("/console/api/knowledge-fs/knowledge-spaces", method="GET"), pytest.raises(NotFound):
+    with (
+        app.test_request_context("/console/api/knowledge-fs/knowledge-spaces", method="GET"),
+        pytest.raises(NotFound),
+    ):
         _proxy_request("GET", "knowledge-spaces")
 
 
